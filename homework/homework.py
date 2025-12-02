@@ -92,3 +92,210 @@
 # {'type': 'cm_matrix', 'dataset': 'train', 'true_0': {"predicted_0": 15562, "predicte_1": 666}, 'true_1': {"predicted_0": 3333, "predicted_1": 1444}}
 # {'type': 'cm_matrix', 'dataset': 'test', 'true_0': {"predicted_0": 15562, "predicte_1": 650}, 'true_1': {"predicted_0": 2490, "predicted_1": 1420}}
 #
+
+
+#Load data
+def load_data(data):
+    import pandas as pd
+
+    data = pd.read_csv(f"./files/input/{data}.csv.zip", compression="zip") 
+
+    return data
+
+train_data = load_data("train_data")
+test_data = load_data("test_data")
+
+
+#Clean data
+def clean_data(data):
+    data = data.copy()
+    data.rename(columns = {'default payment next month':'default'}, inplace = True)
+    data.dropna(inplace=True)
+
+    data["EDUCATION"] = data["EDUCATION"].apply(lambda x: "others" if x not in [1,2,3, 4] else str(x))
+    data.drop(columns=["ID"], inplace=True)
+
+    return data
+
+cleaned_train_data = clean_data(train_data)
+cleaned_test_data = clean_data(test_data)
+
+x_train = cleaned_train_data.drop(columns=["default"])
+y_train = cleaned_train_data["default"] 
+x_test = cleaned_test_data.drop(columns=["default"])
+y_test = cleaned_test_data["default"]
+
+
+
+#Pipeline
+def make_pipeline():
+    from sklearn.pipeline import Pipeline
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.preprocessing import OneHotEncoder
+    from sklearn.compose import ColumnTransformer
+    from sklearn.preprocessing import FunctionTransformer
+    cat = [
+        "SEX",
+        "EDUCATION",
+        "MARRIAGE",
+        "PAY_0",
+        "PAY_2",
+        "PAY_3",
+        "PAY_4",
+        "PAY_5",
+        "PAY_6",
+    ]
+
+    
+    to_str = FunctionTransformer(
+        func=lambda X: X.astype(str),
+        validate=False)
+    
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("to_str", to_str, cat),
+            ("cat", OneHotEncoder(handle_unknown="ignore"), cat),
+        ],
+        remainder="passthrough",
+    )
+
+
+    pipeline = Pipeline(
+        steps=[
+            ("preprocessor", preprocessor),
+            ("classifier", RandomForestClassifier(random_state=42)),
+        ]
+    )
+
+    return pipeline
+
+
+#Optimización de hiperparametros con validación cruzada
+def opt_params(pipeline):
+    from sklearn.model_selection import GridSearchCV
+
+
+    params = {
+        'classifier__n_estimators': [200],
+        'classifier__max_depth': [10, None],
+        'classifier__min_samples_split': [2, 5],
+    }
+
+    grid_search = GridSearchCV(
+        pipeline, 
+        params, 
+        cv=10, 
+        scoring='balanced_accuracy', 
+        n_jobs=-1,
+        verbose=1
+        )
+    grid_search.fit(x_train, y_train)
+
+    return grid_search
+
+
+pipeline = make_pipeline()
+estimator = opt_params(pipeline)
+
+#Guardar modelo
+
+import os
+import gzip
+import pickle
+
+if not os.path.exists("./files/models/"):
+    os.makedirs("./files/models/")
+
+
+model_name = "./files/models/model.pkl.gz"
+with gzip.open(model_name, 'wb') as f:
+    pickle.dump(estimator, f)
+
+
+#Calculo de métricas
+def calc_metrics(estimator):
+
+    x_train = cleaned_train_data.drop(columns=["default"])
+    y_train = cleaned_train_data["default"]
+    x_test = cleaned_test_data.drop(columns=["default"])
+    y_test = cleaned_test_data["default"]
+
+    from sklearn.metrics import (
+        precision_score,
+        balanced_accuracy_score,
+        recall_score,
+        f1_score,
+        confusion_matrix
+    )
+
+    import json
+    import os
+
+    out_dir = "./files/output/"
+    out_file = os.path.join(out_dir, "metrics.json")
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+    # create the json file if it doesn't exist
+    if not os.path.exists(out_file):
+        with open(out_file, "w", encoding="utf-8") as f:
+            f.write("")
+
+
+    
+
+    with open("files/output/metrics.json", "w", encoding="utf-8") as file:
+
+        # ---- TRAIN METRICS ----
+        y_pred_train = estimator.predict(x_train)
+        metrics_train = {
+            "type": "metrics",
+            "dataset": "train",
+            "precision": float(precision_score(y_train, y_pred_train)),
+            "balanced_accuracy": float(balanced_accuracy_score(y_train, y_pred_train)),
+            "recall": float(recall_score(y_train, y_pred_train)),
+            "f1_score": float(f1_score(y_train, y_pred_train)),
+        }
+        file.write(json.dumps(metrics_train) + "\n")
+
+        cm = confusion_matrix(y_train, y_pred_train)
+        cm_train = {
+            "type": "cm_matrix",
+            "dataset": "train",
+            "true_0": {
+                "predicted_0": int(cm[0][0]),
+                "predicted_1": int(cm[0][1]),
+            },
+            "true_1": {
+                "predicted_0": int(cm[1][0]),
+                "predicted_1": int(cm[1][1]),
+            },
+        }
+        file.write(json.dumps(cm_train) + "\n")
+
+        y_pred_test = estimator.predict(x_test)
+        metrics_test = {
+            "type": "metrics",
+            "dataset": "test",
+            "precision": float(precision_score(y_test, y_pred_test)),
+            "balanced_accuracy": float(balanced_accuracy_score(y_test, y_pred_test)),
+            "recall": float(recall_score(y_test, y_pred_test)),
+            "f1_score": float(f1_score(y_test, y_pred_test)),
+        }
+        file.write(json.dumps(metrics_test) + "\n")
+
+        cm = confusion_matrix(y_test, y_pred_test)
+        cm_test = {
+            "type": "cm_matrix",
+            "dataset": "test",
+            "true_0": {
+                "predicted_0": int(cm[0][0]),
+                "predicted_1": int(cm[0][1]),
+            },
+            "true_1": {
+                "predicted_0": int(cm[1][0]),
+                "predicted_1": int(cm[1][1]),
+            },
+        }
+        file.write(json.dumps(cm_test) + "\n")
+
+calc_metrics(estimator)
